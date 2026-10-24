@@ -33,10 +33,14 @@ from typing import Any
 
 from . import cards as cards_mod
 from . import ideas
-from .store import Lock, iso, read_json, write_json
+from .store import Lock, iso, write_json
 
 
 class SessionRuleError(RuntimeError):
+    pass
+
+
+class StaleSessionError(SessionRuleError):
     pass
 
 
@@ -52,14 +56,21 @@ class Session:
     review: dict[str, dict[str, Any]] = field(default_factory=dict)
     edit_notes: dict[str, dict[str, Any]] = field(default_factory=dict)
     dir: Path = Path(".")
+    _revision: str | None = field(default=None, init=False, repr=False, compare=False)
 
     @classmethod
     def load(cls, folder: Path) -> Session:
-        data = read_json(folder / "session.json")
+        try:
+            raw = (folder / "session.json").read_bytes()
+            data = json.loads(raw)
+        except (OSError, ValueError):
+            raise SessionRuleError("%s has no readable session.json" % folder) from None
         if not isinstance(data, dict):
             raise SessionRuleError("%s has no readable session.json" % folder)
-        known = {k: data[k] for k in cls.__dataclass_fields__ if k in data and k != "dir"}
-        return cls(**known, dir=folder)
+        known = {k: data[k] for k, f in cls.__dataclass_fields__.items() if k in data and f.init and k != "dir"}
+        session = cls(**known, dir=folder)
+        session._revision = hashlib.sha256(raw).hexdigest()
+        return session
 
     def save(self) -> None:
         with self.lock():
@@ -68,11 +79,25 @@ class Session:
     def lock(self) -> Lock:
         return Lock(self.dir / "session.lock")
 
+    def check_current(self) -> None:
+        """Compare the loaded revision while holding the session lock."""
+        try:
+            current = hashlib.sha256((self.dir / "session.json").read_bytes()).hexdigest()
+        except FileNotFoundError:
+            current = None
+        except OSError:
+            raise StaleSessionError("stale or unreadable session; reload before changing it") from None
+        if current != self._revision:
+            raise StaleSessionError("stale session; reload before changing it")
+
     def _save(self) -> None:
         """Write session state while the caller holds the session lock."""
+        self.check_current()
         data = asdict(self)
         data.pop("dir")
+        data.pop("_revision")
         write_json(self.dir / "session.json", data)
+        self._revision = file_hash(self.dir / "session.json")
 
     @property
     def takes_dir(self) -> Path:

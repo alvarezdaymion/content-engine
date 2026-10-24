@@ -66,6 +66,24 @@ def test_the_last_take_of_a_card_wins_and_earlier_ones_are_superseded():
     assert result["take-02"].status == "matched" and result["take-03"].card == 3
 
 
+def test_a_restored_superseded_take_does_not_override_selection_history():
+    previous = {"take-01": {"status": "superseded", "card": 1, "by": "retake-01"},
+                "retake-01": {"status": "matched", "card": 1}}
+    result = match_takes(CARDS, {name: tw(CARDS[0]["question"]) for name in previous}, previous=previous)
+    assert result["retake-01"].status == "matched"
+    assert result["take-01"].status == "superseded" and result["take-01"].by == "retake-01"
+    missing = match_takes(CARDS, {"take-01": tw(CARDS[0]["question"])}, previous=previous)
+    assert missing["take-01"].status == "superseded" and missing["take-01"].by == "retake-01"
+
+
+def test_a_new_take_can_replace_a_known_selection_regardless_of_filename_order():
+    previous = {"take-01": {"status": "matched", "card": 1}}
+    result = match_takes(CARDS, {"take-01": tw(CARDS[0]["question"]), "new-01": tw(CARDS[0]["question"])},
+                         previous=previous)
+    assert result["new-01"].status == "matched"
+    assert result["take-01"].status == "superseded" and result["take-01"].by == "new-01"
+
+
 def test_align_scores_the_share_heard_in_order():
     assert align(["a", "b", "c", "d"], ["x", "a", "b", "d"])[0] == 0.75
     assert align([], ["a"]) == (0.0, -1, -1)

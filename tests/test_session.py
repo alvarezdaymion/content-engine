@@ -82,6 +82,41 @@ def test_the_queue_holds_only_approved_unchanged_items(cfg):
     assert S.queue([s])[0] == [(s, 1)]
 
 
+@pytest.mark.parametrize("writer", ["save", "match", "edit"])
+def test_stale_writers_preserve_a_newer_rejection_and_artifacts(cfg, writer):
+    s = approved_session(cfg)
+    stale = S.Session.load(s.dir)
+    current = S.Session.load(s.dir)
+    review.reject(current, [1], "Synthetic correction required", NOW)
+    current.save()
+    state = (s.dir / "session.json").read_bytes()
+    subtitles = cfg.out_dir / s.id / "captions" / "1.ass"
+    original = subtitles.read_bytes()
+    cfg.data["edit"]["disclosure"] = "Synthetic changed disclosure"
+    with pytest.raises(S.SessionRuleError, match="stale"):
+        if writer == "save":
+            assert review.approve(stale, [2], NOW) == []
+            stale.save()
+        else:
+            getattr(pipeline, writer)(cfg, stale)
+    assert (s.dir / "session.json").read_bytes() == state
+    assert subtitles.read_bytes() == original
+    assert S.review_status(S.Session.load(s.dir), 1) == "rejected"
+
+
+@pytest.mark.parametrize("damage", ["deleted", "malformed"])
+def test_a_loaded_session_cannot_overwrite_missing_or_damaged_state(cfg, damage):
+    s = approved_session(cfg)
+    path = s.dir / "session.json"
+    if damage == "deleted":
+        path.unlink()
+    else:
+        path.write_text('{"review":')
+    with pytest.raises(S.SessionRuleError, match="stale"):
+        s.save()
+    assert not path.exists() if damage == "deleted" else path.read_text() == '{"review":'
+
+
 def test_re_running_edit_keeps_approvals_when_nothing_changed(cfg):
     s = approved_session(cfg)
     pipeline.edit(cfg, s)
@@ -177,6 +212,24 @@ def test_a_new_take_preserves_the_missing_takes_superseded_identity(cfg):
     older.write_bytes(contents)
     pipeline.edit(cfg, s)
     assert s.edits["1"]["take"] == "retake-01"
+    assert S.review_status(s, 1) == "approved"
+
+
+def test_restoring_an_older_transcript_keeps_the_present_retake_selected(cfg):
+    s = approved_session(cfg)
+    older = s.takes_dir / "take-01.json"
+    contents = older.read_bytes()
+    older.unlink()
+    record(s, [1], name_prefix="retake")
+    pipeline.edit(cfg, s)
+    assert s.edits["1"]["take"] == "retake-01"
+    assert review.approve(s, [1], NOW) == []
+    s.save()
+    older.write_bytes(contents)
+    s = S.Session.load(s.dir)
+    pipeline.edit(cfg, s)
+    assert s.edits["1"]["take"] == "retake-01"
+    assert s.takes["take-01"]["status"] == "superseded"
     assert S.review_status(s, 1) == "approved"
 
 

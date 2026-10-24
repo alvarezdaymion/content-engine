@@ -1,13 +1,16 @@
 import json
+import threading
 
 import pytest
 
-from content_engine import config
+from content_engine import cli, config, review
 from content_engine import session as S
 from content_engine.cli import main
 from content_engine.demo import demo_config, run_demo
 from content_engine.demo_data import take_words
 from content_engine.publish import run as P
+
+from .conftest import approved_session
 
 
 def test_demo_runs_the_whole_loop_offline(tmp_path):
@@ -91,3 +94,70 @@ def test_run_waits_for_post_after_and_honours_mode_off(tmp_path, capsys):
     assert main(["run", "--config", str(conf)]) == 0
     assert "Ideas: 0 ranked" in capsys.readouterr().out
     assert main(["publish", "--config", str(conf)]) == 0 and "off" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["match", "edit"])
+def test_commands_reload_after_a_rejection_saved_during_session_selection(cfg, monkeypatch, command):
+    s = approved_session(cfg)
+    selected, resume = threading.Event(), threading.Event()
+    load = S.Session.load
+    codes, errors = [], []
+    monkeypatch.setattr(cli, "_cfg", lambda _: cfg)
+
+    def delayed_load(cls, folder):
+        loaded = load(folder)
+        if threading.current_thread().name == "session-command" and not selected.is_set():
+            selected.set()
+            assert resume.wait(5)
+        return loaded
+
+    def run_command():
+        try:
+            codes.append(main([command, s.id]))
+        except BaseException as e:
+            errors.append(e)
+
+    monkeypatch.setattr(S.Session, "load", classmethod(delayed_load))
+    thread = threading.Thread(target=run_command, name="session-command")
+    thread.start()
+    try:
+        assert selected.wait(5)
+        assert main(["reject", s.id, "1", "--note", "Synthetic correction required"]) == 0
+    finally:
+        resume.set()
+        thread.join(5)
+    assert not thread.is_alive() and not errors and codes == [0]
+    assert S.review_status(S.Session.load(s.dir), 1) == "rejected"
+
+
+def test_decision_commands_lock_loading_through_saving(cfg, monkeypatch):
+    s = approved_session(cfg)
+    deciding, resume = threading.Event(), threading.Event()
+    reject = review.reject
+    codes, errors = [], []
+    monkeypatch.setattr(cli, "_cfg", lambda _: cfg)
+
+    def delayed_reject(*args):
+        deciding.set()
+        assert resume.wait(5)
+        return reject(*args)
+
+    def run_rejection():
+        try:
+            codes.append(main(["reject", s.id, "1", "--note", "Synthetic correction required"]))
+        except BaseException as e:
+            errors.append(e)
+
+    monkeypatch.setattr(review, "reject", delayed_reject)
+    thread = threading.Thread(target=run_rejection)
+    thread.start()
+    try:
+        assert deciding.wait(5)
+        assert main(["approve", s.id, "2"]) == 1
+    finally:
+        resume.set()
+        thread.join(5)
+    assert not thread.is_alive() and not errors and codes == [0]
+    persisted = S.Session.load(s.dir)
+    assert S.review_status(persisted, 1) == "rejected"
+    assert S.review_status(persisted, 2) == "pending"

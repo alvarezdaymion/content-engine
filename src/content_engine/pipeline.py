@@ -38,10 +38,12 @@ def match(cfg: Any, session: Session) -> tuple[dict[str, Match], list[str]]:
 
 
 def _match(cfg: Any, session: Session) -> tuple[dict[str, Match], list[str]]:
+    session.check_current()
     found = find_takes(session.takes_dir)
     words = {name: load_words(t["transcript"]) for name, t in found.items() if t["transcript"]}
     m = cfg["matching"]
-    results = match_takes(session.cards, words, float(m["threshold"]), float(m["margin"]), int(m["window_words"]))
+    results = match_takes(session.cards, words, float(m["threshold"]), float(m["margin"]), int(m["window_words"]),
+                          previous=session.takes)
     takes = {name: {**r.to_json(), "video": found[name]["video"].name if found[name]["video"] else None}
              for name, r in results.items()}
     for name, old in session.takes.items():

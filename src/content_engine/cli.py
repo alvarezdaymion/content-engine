@@ -20,6 +20,8 @@ import datetime as dt
 import os
 import shutil
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import config as config_mod
@@ -43,6 +45,14 @@ def _cfg(args: argparse.Namespace) -> config_mod.Config:
 
 def _session(cfg: config_mod.Config, sid: str | None) -> session_mod.Session:
     return session_mod.get(session_mod.load_all(cfg), sid)
+
+
+@contextmanager
+def _locked_session(cfg: config_mod.Config, sid: str | None) -> Iterator[session_mod.Session]:
+    selected = _session(cfg, sid)
+    # Selection finds the folder; only the locked reload is used for changes.
+    with selected.lock():
+        yield session_mod.Session.load(selected.dir)
 
 
 def _live(cfg: config_mod.Config, args: argparse.Namespace) -> bool:
@@ -188,8 +198,8 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
 
 def cmd_match(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
-    s = _session(cfg, args.session)
-    results, waiting = pipeline.match(cfg, s)
+    with _locked_session(cfg, args.session) as s:
+        results, waiting = pipeline._match(cfg, s)
     for name, m in results.items():
         detail = "card %s, score %.2f" % (m.card, m.score) if m.status == "matched" else \
             "card %s, replaced by %s" % (m.card, m.by) if m.status == "superseded" else m.reason
@@ -204,8 +214,8 @@ def cmd_match(args: argparse.Namespace) -> int:
 
 def cmd_edit(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
-    s = _session(cfg, args.session)
-    rows = pipeline.edit(cfg, s, render_video=args.render, rewrite_captions=args.rewrite_captions)
+    with _locked_session(cfg, args.session) as s:
+        rows = pipeline._edit(cfg, s, args.render, args.rewrite_captions)
     for r in rows:
         print("  card %d  %.1f s -> %.1f s, %d cut(s), %d caption cues, %d graphic(s); %s"
               % (r["card"], r["raw"], r["cut"], len(r["removed"]), r["cues"], r["graphics"], r["render"]))
@@ -217,12 +227,12 @@ def cmd_edit(args: argparse.Namespace) -> int:
 
 def cmd_decide(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
-    s = _session(cfg, args.session)
-    now = now_utc()
-    problems = review.approve(s, args.numbers, now, cfg["cards"]["banned_words"]) if args.cmd == "approve" else \
-        review.reject(s, args.numbers, args.note, now)
-    s.save()
-    review.write_page(cfg, s)
+    with _locked_session(cfg, args.session) as s:
+        now = now_utc()
+        problems = review.approve(s, args.numbers, now, cfg["cards"]["banned_words"]) if args.cmd == "approve" else \
+            review.reject(s, args.numbers, args.note, now)
+        s._save()
+        review.write_page(cfg, s)
     for p in problems:
         print("  %s" % p)
     for n in args.numbers:

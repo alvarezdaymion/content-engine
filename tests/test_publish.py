@@ -383,6 +383,35 @@ def test_persisted_session_changes_stop_prepared_posts(cfg, monkeypatch, runner,
     assert ledger.events()[-1]["event"] == "failed"
 
 
+@pytest.mark.parametrize("runner", ["daily", "repair"])
+@pytest.mark.parametrize("writer", ["save", "match", "edit"])
+def test_stale_commands_cannot_return_rejected_items_to_live_publishing(cfg, monkeypatch, runner, writer):
+    s = approved_session(cfg)
+    render_session(cfg, s, monkeypatch)
+    cfg.data["publish"]["platforms"] = ["facebook"]
+    for key in ENV["facebook"]:
+        monkeypatch.setenv(key, "test-" + key.lower())
+    stale = S.Session.load(s.dir)
+    rejected = S.Session.load(s.dir)
+    review.reject(rejected, [1], "Synthetic correction required", NOW)
+    rejected.save()
+    with pytest.raises(S.SessionRuleError, match="stale"):
+        if writer == "save":
+            assert review.approve(stale, [2], NOW) == []
+            stale.save()
+        else:
+            getattr(pipeline, writer)(cfg, stale)
+    ledger = P.ledger_for(cfg, True)
+    if runner == "repair":
+        ledger.append(s.key(1), "facebook", "attempt", NOW, DAY)
+        ledger.append(s.key(1), "facebook", "failed", NOW, DAY)
+    sim = Simulator()
+    getattr(P, runner)(cfg, S.load_all(cfg), NOW, True, transport=sim, out=lambda _: None)
+    assert not sim.calls
+    assert S.review_status(S.Session.load(s.dir), 1) == "rejected"
+    assert ledger.states().get((s.key(1), "facebook"), P.PlatformState()).attempts == (runner == "repair")
+
+
 @pytest.mark.parametrize("writer", ["save", "match", "edit"])
 def test_session_writes_cannot_enter_the_verified_commit(cfg, monkeypatch, writer):
     s = approved_session(cfg)
