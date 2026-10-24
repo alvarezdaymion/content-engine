@@ -84,6 +84,27 @@ def test_a_new_take_can_replace_a_known_selection_regardless_of_filename_order()
     assert result["take-01"].status == "superseded" and result["take-01"].by == "new-01"
 
 
+def test_correcting_an_unmatched_take_supersedes_the_missing_selection():
+    old = match_take("take-01", tw(CARDS[0]["question"]), CARDS)
+    unmatched = match_take("retry-01", tw("A synthetic unrelated pickup"), CARDS)
+    assert unmatched.status == "unmatched"
+    history = {old.take: old.to_json(), unmatched.take: unmatched.to_json()}
+    result = match_takes(CARDS, {unmatched.take: tw(CARDS[0]["question"])}, previous=history)
+    assert result[unmatched.take].status == "matched"
+    assert result[old.take].status == "superseded" and result[old.take].by == unmatched.take
+    assert result[old.take].missing and result[old.take].q_end == old.q_end
+
+
+def test_missing_history_remains_part_of_the_matchers_selection():
+    history = {"take-01": {"status": "superseded", "card": 1, "by": "retake-01"},
+               "retake-01": {"status": "matched", "card": 1},
+               "earlier-01": {"status": "superseded", "card": 1, "by": "retake-01"}}
+    result = match_takes(CARDS, {"take-01": tw(CARDS[0]["question"])}, previous=history)
+    assert result["retake-01"].status == "matched" and result["retake-01"].missing
+    assert result["take-01"].status == "superseded" and result["take-01"].by == "retake-01"
+    assert result["earlier-01"].status == "superseded" and result["earlier-01"].missing
+
+
 def test_align_scores_the_share_heard_in_order():
     assert align(["a", "b", "c", "d"], ["x", "a", "b", "d"])[0] == 0.75
     assert align([], ["a"]) == (0.0, -1, -1)

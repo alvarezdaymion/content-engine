@@ -29,10 +29,10 @@ def _hash(texts: dict[str, str]) -> str:
 
 
 def match(cfg: Any, session: Session) -> tuple[dict[str, Match], list[str]]:
-    """Match every take that has a transcript. Returns (matches, takes still waiting for a transcript).
+    """Return the matcher's decisions, including missing history, and takes waiting for a transcript.
 
-    A take matched earlier whose transcript has since been deleted keeps its match (marked "missing") unless a
-    newer take now covers its card, so clearing old files never un-records a session or drops its edits."""
+    A take matched earlier whose transcript has since been deleted keeps its match (marked "missing") unless the
+    matcher selects a replacement, so clearing old files never un-records a session or drops its edits."""
     with session.lock():
         return _match(cfg, session)
 
@@ -44,26 +44,12 @@ def _match(cfg: Any, session: Session) -> tuple[dict[str, Match], list[str]]:
     m = cfg["matching"]
     results = match_takes(session.cards, words, float(m["threshold"]), float(m["margin"]), int(m["window_words"]),
                           previous=session.takes)
-    takes = {name: {**r.to_json(), "video": found[name]["video"].name if found[name]["video"] else None}
-             for name, r in results.items()}
-    for name, old in session.takes.items():
-        if name not in takes and old.get("status") == "superseded":
-            takes[name] = {**old, "missing": True}
-    for name, old in session.takes.items():
-        if name in takes or old.get("status") != "matched":
-            continue
-        replacements = [other for other, t in takes.items()
-                        if t["status"] == "matched" and t.get("card") == old.get("card")]
-        newer = [other for other in replacements if other not in session.takes
-                 or (session.takes[other].get("status") != "superseded" and other > name)]
-        if newer:
-            takes[name] = {**old, "status": "superseded", "by": newer[-1], "missing": True}
-            continue
-        for other in replacements:
-            results[other].status, results[other].by = "superseded", name
-            takes[other].update(status="superseded", by=name)
-        takes[name] = {**old, "missing": True}
-    session.takes = dict(sorted(takes.items()))
+    takes = {}
+    for name, result in results.items():
+        video = found.get(name, {}).get("video")
+        saved_video = session.takes.get(name, {}).get("video") if result.missing else None
+        takes[name] = {**result.to_json(), "video": video.name if video else saved_video}
+    session.takes = takes
     session._save()
     return results, [name for name, t in found.items() if not t["transcript"]]
 

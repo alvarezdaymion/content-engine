@@ -4,10 +4,12 @@ import json
 
 import pytest
 
-from content_engine import ideas, pipeline, review
+from content_engine import cli, ideas, pipeline, review
 from content_engine import session as S
 from content_engine.demo_data import take_words
+from content_engine.matching import match_takes
 from content_engine.publish import run as P
+from content_engine.transcript import load_words
 
 from .conftest import ANSWER, NOW, approved_session, record, render_session
 
@@ -231,6 +233,30 @@ def test_restoring_an_older_transcript_keeps_the_present_retake_selected(cfg):
     assert s.edits["1"]["take"] == "retake-01"
     assert s.takes["take-01"]["status"] == "superseded"
     assert S.review_status(s, 1) == "approved"
+
+
+@pytest.mark.parametrize("name", ["retry-01", "take-04"])
+def test_a_corrected_unmatched_take_replaces_the_missing_cut_and_requires_approval(cfg, monkeypatch, name):
+    s = approved_session(cfg)
+    path = s.takes_dir / (name + ".json")
+    path.write_text(json.dumps(take_words("A synthetic unrelated pickup", ANSWER)))
+    pipeline.edit(cfg, s)
+    assert s.takes[name]["status"] == "unmatched" and s.edits["1"]["take"] == "take-01"
+    (s.takes_dir / "take-01.json").unlink()
+    path.write_text(json.dumps(take_words(s.card(1)["question"], ANSWER)))
+    words = {p.stem: load_words(p) for p in s.takes_dir.glob("*.json")}
+    expected = match_takes(s.cards, words, previous=s.takes)
+    monkeypatch.setattr(cli, "_cfg", lambda _: cfg)
+    assert cli.main(["match", s.id]) == 0
+    s = S.Session.load(s.dir)
+    for take, decision in expected.items():
+        assert {key: s.takes[take][key] for key in decision.to_json()} == decision.to_json()
+    assert s.takes[name]["status"] == "matched"
+    assert s.takes["take-01"]["status"] == "superseded" and s.takes["take-01"]["by"] == name
+    assert s.takes["take-01"]["missing"]
+    pipeline.edit(cfg, s)
+    assert s.edits["1"]["take"] == name
+    assert S.review_status(s, 1) == "changed" and S.queue([s])[0] == []
 
 
 @pytest.mark.parametrize("artifact", ["subtitles", "source", "render"])

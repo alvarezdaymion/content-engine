@@ -203,6 +203,8 @@ def cmd_match(args: argparse.Namespace) -> int:
     for name, m in results.items():
         detail = "card %s, score %.2f" % (m.card, m.score) if m.status == "matched" else \
             "card %s, replaced by %s" % (m.card, m.by) if m.status == "superseded" else m.reason
+        if m.missing:
+            detail += " (transcript missing)"
         print("  %-16s %-10s %s" % (name, m.status, detail))
     if waiting:
         print("  no transcript yet: %s (run content-engine transcribe, or add <take>.json)" % ", ".join(waiting))

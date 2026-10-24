@@ -96,6 +96,17 @@ def test_run_waits_for_post_after_and_honours_mode_off(tmp_path, capsys):
     assert main(["publish", "--config", str(conf)]) == 0 and "off" in capsys.readouterr().out
 
 
+def test_match_reports_a_retained_selection_with_a_missing_transcript(cfg, monkeypatch, capsys):
+    s = approved_session(cfg)
+    (s.takes_dir / "take-01.json").unlink()
+    monkeypatch.setattr(cli, "_cfg", lambda _: cfg)
+    assert main(["match", s.id]) == 0
+    line = next(line for line in capsys.readouterr().out.splitlines() if "take-01" in line)
+    assert "matched" in line and "transcript missing" in line
+    persisted = S.Session.load(s.dir)
+    assert persisted.takes["take-01"]["missing"] and S.review_status(persisted, 1) == "approved"
+
+
 @pytest.mark.parametrize("command", ["match", "edit"])
 def test_commands_reload_after_a_rejection_saved_during_session_selection(cfg, monkeypatch, command):
     s = approved_session(cfg)

@@ -5,7 +5,8 @@ For each take, the first `window` words are aligned against every card's questio
 share of the question's words heard in order. The best card wins when it scores at least `threshold` and beats the
 runner-up by `margin`. That tolerates a take that starts mid-question and a few misheard words, and refuses to guess
 between two similar questions. A take with no question (a pickup) stays unmatched. New takes supersede known
-selections; otherwise the saved selection wins. Filename order breaks ties among newly discovered takes.
+selections; otherwise the saved selection wins, even when its transcript is missing. Filename order breaks ties
+among newly discovered takes. Correcting an unmatched take makes it eligible to replace the selection.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ class Match:
     q_end: float = 0.0
     reason: str = ""
     by: str = ""
+    missing: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,18 +102,24 @@ def match_takes(cards: list[dict[str, Any]], takes: dict[str, list[tuple[str, fl
                 previous: dict[str, dict[str, Any]] | None = None) -> dict[str, Match]:
     history = previous or {}
     results = {name: match_take(name, words, cards, threshold, margin, window) for name, words in sorted(takes.items())}
+    for name, old in sorted(history.items()):
+        if name not in results and old.get("status") in ("matched", "superseded"):
+            saved = {k: v for k, v in old.items() if k in Match.__dataclass_fields__}
+            results[name] = Match(**{**saved, "take": name, "missing": True})
     by_card: dict[int, list[str]] = {}
     for name, m in results.items():
-        if m.status == "matched" and m.card is not None:
+        if m.status in ("matched", "superseded") and m.card is not None:
             by_card.setdefault(m.card, []).append(name)
     for card, names in by_card.items():
-        fresh = [name for name in names if name not in history or history[name].get("card") != card
-                 or history[name].get("status") == "unmatched"]
-        selected = [name for name in names if history.get(name, {}).get("status") == "matched"]
+        fresh = [name for name in names if not results[name].missing and results[name].status == "matched"
+                 and (name not in history or history[name].get("card") != card
+                      or history[name].get("status") == "unmatched")]
+        selected = [name for name in names if results[name].status == "matched"
+                    and history.get(name, {}).get("status") == "matched"]
         candidates = fresh or selected
         winner = candidates[-1] if candidates else None
         for name in names:
             if name != winner:
                 results[name].status = "superseded"
                 results[name].by = winner or str(history.get(name, {}).get("by") or "")
-    return results
+    return dict(sorted(results.items()))
