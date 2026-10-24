@@ -1,0 +1,29 @@
+# runtime output and local data (never commit)
+sessions/
+state/
+out/
+content-engine-demo/
+content-engine.toml
+ideas.toml
+.env
+*.env
+!.env.example
+
+# media
+*.mp4
+*.mov
+*.m4v
+*.mkv
+*.mp3
+*.wav
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store
