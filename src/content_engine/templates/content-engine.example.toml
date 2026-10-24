@@ -59,7 +59,7 @@ closing = "Save this for later."
 mode = "dry-run"                # off | dry-run (simulated platforms, separate ledger) | live
 platforms = ["facebook", "instagram", "threads", "x", "youtube", "tiktok"]
 post_after = "11:30"            # `content-engine run` posts today's reel on its first tick after this time
-video_base_url = ""             # Instagram and Threads fetch renders from here: <base>/<session>-<card>.mp4
+video_base_url = ""             # immutable uploads: <base>/<session>-<card>-<sha256>.mp4; set before edit/approval
 max_attempts = 3                # per item and platform, first try included (repair only retries definite failures)
 low_queue = 3                   # "record the next session" when this few approved reels are left
 

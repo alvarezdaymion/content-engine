@@ -126,3 +126,4 @@ def render_session(cfg, s, monkeypatch):
     monkeypatch.setattr(pipeline, "render", render)
     pipeline.edit(cfg, s, render_video=True)
     assert review.approve(s, [1], NOW) == []
+    s.save()

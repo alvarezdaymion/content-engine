@@ -1,5 +1,6 @@
 """Each connector against a fake transport: the exact calls, which one is the commit, and no secrets in errors."""
 
+import hashlib
 import json
 import urllib.parse
 
@@ -22,10 +23,12 @@ TOKEN = "test-token-not-real"
 TEXTS = {"full": "Full caption", "short": "Short caption", "x": "X caption"}
 
 
-def post(tmp_path, url="https://media.example.com/s-1.mp4"):
+def post(tmp_path, url=None):
     video = tmp_path / "1.mp4"
     video.write_bytes(b"\x01" * 100)
-    return Post("s#1", "A title", TEXTS, video, url)
+    digest = hashlib.sha256(video.read_bytes()).hexdigest()
+    hosted = "https://media.example.com/s-1-%s.mp4" % digest if url is None else url
+    return Post("s#1", "A title", TEXTS, video, hosted, video_sha256=digest)
 
 
 class Commit:
@@ -68,7 +71,8 @@ def meta_routes(version, user, create, publish, status_field, status="FINISHED",
         if q.get("fields") == "permalink":
             return {"permalink": "https://example.com/p/1"} if permalink else (500, {"error": "down"})
         return {status_field: status}
-    return {("HEAD", "media.example.com"): {}, ("POST", "%s/%s%s" % (version, user, create)): {"id": "c1"},
+    return {("GET", "media.example.com"): (200, b"\x01" * 100),
+            ("POST", "%s/%s%s" % (version, user, create)): {"id": "c1"},
             ("GET", version + "/c1"): node, ("GET", version + "/m1"): node,
             ("POST", "%s/%s%s" % (version, user, publish)): {"id": "m1"}}
 
@@ -78,10 +82,10 @@ def test_instagram_checks_the_url_waits_for_the_container_and_publishes(tmp_path
     commit = Commit()
     r = Instagram(Http(fake), "9", TOKEN, sleep=lambda s: None).publish(post(tmp_path), commit)
     assert (r.status, r.post_id, r.url) == ("posted", "m1", "https://example.com/p/1") and commit.calls == 1
-    assert fake.calls[0]["method"] == "HEAD"
+    assert fake.calls[0]["method"] == "GET"
     created = form(fake.calls[1])
     assert created["media_type"] == "REELS" and created["caption"] == "Full caption"
-    assert created["video_url"] == "https://media.example.com/s-1.mp4"
+    assert created["video_url"] == fake.calls[0]["url"]
 
 
 def test_instagram_permalink_failure_after_publishing_is_still_posted(tmp_path):
@@ -106,6 +110,42 @@ def test_threads_uses_the_short_text(tmp_path):
     r = Threads(Http(fake), "5", TOKEN, sleep=lambda s: None).publish(post(tmp_path), Commit())
     assert r.post_id == "m1" and form(fake.calls[1])["text"] == "Short caption"
     assert form(fake.calls[1])["media_type"] == "VIDEO"
+
+
+@pytest.mark.parametrize("platform", ["instagram", "threads"])
+@pytest.mark.parametrize("status,body", [(200, b"different synthetic video"), (200, b""),
+                                        (206, b"\x01" * 100), (404, b"missing")],
+                         ids=["different", "empty", "partial", "missing"])
+def test_hosted_media_must_match_the_approved_digest_before_container_creation(tmp_path, platform, status, body):
+    if platform == "instagram":
+        routes = meta_routes("/v23.0", "9", "/media", "/media_publish", "status_code")
+        connector = Instagram
+    else:
+        routes = meta_routes("/v1.0", "9", "/threads", "/threads_publish", "status")
+        connector = Threads
+    candidate = post(tmp_path)
+    candidate.video_sha256 = hashlib.sha256(candidate.video_bytes()).hexdigest()
+    candidate.video_url = "https://media.example.com/s-1-%s.mp4" % candidate.video_sha256
+    routes[("GET", "media.example.com")] = (status, body)
+    fake, commit = FakeHttp(routes), Commit()
+    with pytest.raises((PublishError, HttpError)):
+        connector(Http(fake), "9", TOKEN, sleep=lambda _: None).publish(candidate, commit)
+    assert commit.calls == 0 and all(c["method"] == "GET" for c in fake.calls)
+
+
+@pytest.mark.parametrize("platform", ["instagram", "threads"])
+@pytest.mark.parametrize("invalid", ["mutable_url", "missing_digest", "query_digest"])
+def test_hosted_media_requires_a_digest_in_the_url_path(tmp_path, platform, invalid):
+    candidate = post(tmp_path)
+    digest = hashlib.sha256(candidate.video_bytes()).hexdigest()
+    candidate.video_sha256 = "" if invalid == "missing_digest" else digest
+    candidate.video_url = ("https://media.example.com/s-1.mp4?version=" + digest if invalid == "query_digest"
+                           else "https://media.example.com/s-1.mp4")
+    fake, commit = FakeHttp({}), Commit()
+    connector = Instagram if platform == "instagram" else Threads
+    with pytest.raises(PublishError):
+        connector(Http(fake), "9", TOKEN, sleep=lambda _: None).publish(candidate, commit)
+    assert not fake.calls and commit.calls == 0
 
 
 def test_x_uploads_in_segments_then_posts_the_x_text_signed(tmp_path):

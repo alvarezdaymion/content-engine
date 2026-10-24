@@ -24,8 +24,9 @@ def _ok(data: Any, status: int = 200, headers: dict[str, str] | None = None) -> 
 
 
 class Simulator:
-    def __init__(self, fail: dict[str, str] | None = None):
+    def __init__(self, fail: dict[str, str] | None = None, media: dict[str, bytes] | None = None):
         self.fail = dict(fail or {})
+        self.media = dict(media or {})
         self.calls: list[tuple[str, str]] = []
         self._ids = itertools.count(1)
         self._failed_once: set[str] = set()
@@ -36,6 +37,8 @@ class Simulator:
     def __call__(self, method: str, url: str, headers: dict[str, str], body: bytes | None,
                  timeout: float) -> tuple[int, dict[str, str], bytes]:
         self.calls.append((method, strip_query(url)))
+        if method == "GET" and url in self.media:
+            return 200, {"Content-Type": "video/mp4"}, self.media[url]
         parts = urllib.parse.urlsplit(url)
         platform, step, resp = self._route(method, parts.hostname or "", parts.path, parts.query, headers, body)
         mode = self.fail.get(platform, "")
@@ -65,8 +68,6 @@ class Simulator:
             return "facebook", "commit", _ok({"success": True})
         if host == "rupload.facebook.com":
             return "facebook", "upload", _ok({"success": True})
-        if method == "HEAD":
-            return "media", "check", _ok({})
         if host in ("graph.instagram.com", "graph.threads.net"):
             name = "instagram" if host == "graph.instagram.com" else "threads"
             if last in ("media", "threads"):

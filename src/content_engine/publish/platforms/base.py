@@ -16,11 +16,16 @@ processing status) are best effort and never turn a post into a failure.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
+import urllib.parse
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+from ...http import Http
 
 Commit = Callable[[Callable[[], Any]], Any]
 PLACEHOLDER = b"\x00" * 2048  # stands in for a missing render in dry runs only
@@ -40,6 +45,8 @@ class Post:
     placeholder: bool = False
     video_sha256: str = ""
     verify: Callable[[], None] | None = None
+    check_pause: Callable[[], None] | None = None
+    guard: Callable[[], AbstractContextManager[Any]] | None = None
 
     def video_bytes(self) -> bytes:
         if self.video is not None and self.video.exists():
@@ -50,6 +57,18 @@ class Post:
         if self.placeholder:
             return PLACEHOLDER
         raise PublishError("no rendered video for %s" % self.item)
+
+    def verify_hosted(self, http: Http) -> None:
+        digest = self.video_sha256
+        need(re.fullmatch(r"[0-9a-f]{64}", digest), "hosted video has no approved SHA-256 digest")
+        url = urllib.parse.urlsplit(self.video_url)
+        need(url.scheme == "https" and url.hostname and not url.username and not url.password
+             and not url.query and not url.fragment and url.path.endswith("-%s.mp4" % digest),
+             "hosted video needs an immutable HTTPS URL containing the approved digest in its filename")
+        response = http.request("GET", self.video_url, headers={"Accept-Encoding": "identity",
+                                                               "Cache-Control": "no-cache"})
+        need(response.status == 200, "hosted video did not return complete content")
+        need(hashlib.sha256(response.body).hexdigest() == digest, "hosted video differs from the approved render")
 
 
 @dataclass

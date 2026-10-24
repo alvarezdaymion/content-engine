@@ -286,13 +286,15 @@ def test_live_mode_needs_credentials_and_a_render_before_anything_is_sent(cfg, m
             monkeypatch.setenv(v, "test-%s-value" % v.lower())
     code, text = daily(cfg, [s], live=True)
     assert code == 1 and "no render" in text and P.ledger_for(cfg, True).events() == []
-    render_session(cfg, s, monkeypatch)
     monkeypatch.setitem(cfg.data["publish"], "video_base_url", "https://media.example.com/reels")
-    sim = Simulator()
+    render_session(cfg, s, monkeypatch)
+    url = s.edits["1"]["video_url"]
+    rendered = s.dir / s.edits["1"]["artifacts"]["render"]
+    sim = Simulator(media={url: rendered.read_bytes()})
     code, text = daily(cfg, [s], live=True, transport=sim)
     st = P.ledger_for(cfg, True).states()
     assert code == 0 and all(st[(s.key(1), p)].state == "done" for p in ORDER)
-    assert ("HEAD", "https://media.example.com/reels/%s-1.mp4" % s.id) in sim.calls
+    assert ("GET", url) in sim.calls
     assert P.ledger_for(cfg, False).events() == []
 
 
@@ -342,6 +344,122 @@ def test_a_render_changed_during_preparation_never_reaches_commit(cfg, monkeypat
     daily(cfg, [s], live=True, transport=transport)
     assert writes == []
     assert P.ledger_for(cfg, True).states()[(s.key(1), "facebook")].state == "failed"
+
+
+@pytest.mark.parametrize("runner", ["daily", "repair"])
+@pytest.mark.parametrize("change", ["rejected", "texts", "missing", "malformed"])
+def test_persisted_session_changes_stop_prepared_posts(cfg, monkeypatch, runner, change):
+    s = approved_session(cfg)
+    render_session(cfg, s, monkeypatch)
+    cfg.data["publish"]["platforms"] = ["facebook"]
+    for key in ENV["facebook"]:
+        monkeypatch.setenv(key, "test-" + key.lower())
+    ledger = P.ledger_for(cfg, True)
+    if runner == "repair":
+        ledger.append(s.key(1), "facebook", "attempt", NOW, DAY)
+        ledger.append(s.key(1), "facebook", "failed", NOW, DAY)
+    simulator = Simulator()
+
+    def transport(method, url, headers, body, timeout):
+        response = simulator(method, url, headers, body, timeout)
+        if "rupload.facebook.com" in url:
+            saved = S.Session.load(s.dir)
+            if change == "rejected":
+                review.reject(saved, [1], "Synthetic correction needed", NOW)
+                saved.save()
+            elif change == "texts":
+                saved.captions["1"]["full"] = "Synthetic replacement caption"
+                saved.save()
+            elif change == "missing":
+                (s.dir / "session.json").unlink()
+            else:
+                (s.dir / "session.json").write_text('{"review":')
+        return response
+
+    getattr(P, runner)(cfg, [s], NOW, True, transport=transport, out=lambda _: None)
+    assert all(not url.endswith("/video_reels") or method != "POST"
+               for method, url in simulator.calls[2:])
+    assert ledger.states()[(s.key(1), "facebook")].state == "failed"
+    assert ledger.events()[-1]["event"] == "failed"
+
+
+@pytest.mark.parametrize("writer", ["save", "match", "edit"])
+def test_session_writes_cannot_enter_the_verified_commit(cfg, monkeypatch, writer):
+    s = approved_session(cfg)
+    render_session(cfg, s, monkeypatch)
+    cfg.data["publish"]["platforms"] = ["facebook"]
+    for key in ENV["facebook"]:
+        monkeypatch.setenv(key, "test-" + key.lower())
+    pending = S.Session.load(s.dir)
+    review.reject(pending, [1], "Synthetic correction needed", NOW)
+    append = Ledger.append
+    blocked = []
+
+    def append_with_writer(self, item, platform, event, *args, **kwargs):
+        if event == "commit":
+            try:
+                if writer == "save":
+                    pending.save()
+                else:
+                    getattr(pipeline, writer)(cfg, pending)
+            except LockedError:
+                blocked.append(writer)
+        return append(self, item, platform, event, *args, **kwargs)
+
+    monkeypatch.setattr(Ledger, "append", append_with_writer)
+    daily(cfg, [s], live=True, transport=Simulator())
+    assert blocked == [writer]
+    assert S.review_status(S.Session.load(s.dir), 1) == "approved"
+    pending.save()
+    assert S.review_status(S.Session.load(s.dir), 1) == "rejected"
+
+
+@pytest.mark.parametrize("runner", ["daily", "repair"])
+@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("phase", ["prepare", "after_publish"])
+def test_pause_during_a_run_stops_pending_commits_and_platforms(cfg, monkeypatch, runner, live, phase):
+    s = approved_session(cfg)
+    render_session(cfg, s, monkeypatch)
+    cfg.data["publish"]["platforms"] = ["facebook", "x"]
+    for platform in ("facebook", "x"):
+        for key in ENV[platform]:
+            monkeypatch.setenv(key, "test-" + key.lower())
+    ledger = P.ledger_for(cfg, live)
+    if runner == "repair":
+        for platform in ("facebook", "x"):
+            ledger.append(s.key(1), platform, "attempt", NOW, DAY)
+            ledger.append(s.key(1), platform, "failed", NOW, DAY)
+    simulator = Simulator()
+
+    def transport(method, url, headers, body, timeout):
+        response = simulator(method, url, headers, body, timeout)
+        if ((phase == "prepare" and "rupload.facebook.com" in url)
+                or (phase == "after_publish" and body and b"upload_phase=finish" in body)):
+            (cfg.state_dir / "PAUSED").touch()
+        return response
+
+    getattr(P, runner)(cfg, [s], NOW, live, transport=transport, out=lambda _: None)
+    assert all("api.x.com" not in url for _, url in simulator.calls)
+    states = ledger.states()
+    assert states[(s.key(1), "facebook")].state == ("failed" if phase == "prepare" else "done")
+    assert states.get((s.key(1), "x"), P.PlatformState()).attempts == (1 if runner == "repair" else 0)
+
+
+def test_pause_created_during_commit_persistence_stops_the_request(cfg, monkeypatch):
+    s = approved_session(cfg)
+    cfg.data["publish"]["platforms"] = ["facebook"]
+    append = Ledger.append
+
+    def append_then_pause(self, item, platform, event, *args, **kwargs):
+        append(self, item, platform, event, *args, **kwargs)
+        if event == "commit":
+            (cfg.state_dir / "PAUSED").touch()
+
+    monkeypatch.setattr(Ledger, "append", append_then_pause)
+    sim = Simulator()
+    daily(cfg, [s], transport=sim)
+    assert len(sim.calls) == 2
+    assert P.ledger_for(cfg, False).states()[(s.key(1), "facebook")].state == "failed"
 
 
 def test_live_instagram_without_a_video_url_fails_before_publishing(cfg, monkeypatch):

@@ -18,7 +18,7 @@ from .captions import build_cues, post_texts, validate_texts
 from .matching import Match, match_takes
 from .overlay import ass_document, place
 from .render import render
-from .session import Session, file_hash, presentation_fingerprint, render_current
+from .session import Session, file_hash, hosted_url, presentation_fingerprint, render_current
 from .store import write_text
 from .transcript import find_takes, load_words
 from .trims import plan_edit
@@ -33,6 +33,11 @@ def match(cfg: Any, session: Session) -> tuple[dict[str, Match], list[str]]:
 
     A take matched earlier whose transcript has since been deleted keeps its match (marked "missing") unless a
     newer take now covers its card, so clearing old files never un-records a session or drops its edits."""
+    with session.lock():
+        return _match(cfg, session)
+
+
+def _match(cfg: Any, session: Session) -> tuple[dict[str, Match], list[str]]:
     found = find_takes(session.takes_dir)
     words = {name: load_words(t["transcript"]) for name, t in found.items() if t["transcript"]}
     m = cfg["matching"]
@@ -40,18 +45,24 @@ def match(cfg: Any, session: Session) -> tuple[dict[str, Match], list[str]]:
     takes = {name: {**r.to_json(), "video": found[name]["video"].name if found[name]["video"] else None}
              for name, r in results.items()}
     for name, old in session.takes.items():
+        if name not in takes and old.get("status") == "superseded":
+            takes[name] = {**old, "missing": True}
+    for name, old in session.takes.items():
         if name in takes or old.get("status") != "matched":
             continue
         replacements = [other for other, t in takes.items()
                         if t["status"] == "matched" and t.get("card") == old.get("card")]
-        if any(other not in session.takes or other > name for other in replacements):
+        newer = [other for other in replacements if other not in session.takes
+                 or (session.takes[other].get("status") != "superseded" and other > name)]
+        if newer:
+            takes[name] = {**old, "status": "superseded", "by": newer[-1], "missing": True}
             continue
         for other in replacements:
             results[other].status, results[other].by = "superseded", name
             takes[other].update(status="superseded", by=name)
         takes[name] = {**old, "missing": True}
     session.takes = dict(sorted(takes.items()))
-    session.save()
+    session._save()
     return results, [name for name, t in found.items() if not t["transcript"]]
 
 
@@ -59,7 +70,12 @@ def edit(cfg: Any, session: Session, render_video: bool = False,
          rewrite_captions: bool = False) -> list[dict[str, Any]]:
     """Edit every matched card and write the review page. Returns one row per card for the summary.
     Takes are matched again first, so a transcript fixed by hand is picked up."""
-    match(cfg, session)
+    with session.lock():
+        return _edit(cfg, session, render_video, rewrite_captions)
+
+
+def _edit(cfg: Any, session: Session, render_video: bool, rewrite_captions: bool) -> list[dict[str, Any]]:
+    _match(cfg, session)
     out = cfg.out_dir / session.id
     ec = cfg["edit"]
     rows = []
@@ -111,12 +127,14 @@ def edit(cfg: Any, session: Session, render_video: bool = False,
                     and before == presentation_fingerprint(session, n)):
                 edit["render_proof"] = {"fingerprint": before, "sha256": digest}
         edit["render"] = status
+        edit["video_url"] = hosted_url(str(cfg["publish"]["video_base_url"]).strip(), session.id, n,
+                                       str((edit.get("render_proof") or {}).get("sha256") or ""))
         edited.add(str(n))
         rows.append({"card": n, "take": name, "raw": e.duration_raw, "cut": e.duration, "removed": e.removed,
                      "cues": len(cues), "graphics": len(graphics), "problems": session.edits[str(n)]["problems"],
                      "render": status})
     for stale in set(session.edits) - edited:  # a card whose take no longer matches loses its edit
         del session.edits[stale]
-    session.save()
+    session._save()
     review.write_page(cfg, session)
     return rows

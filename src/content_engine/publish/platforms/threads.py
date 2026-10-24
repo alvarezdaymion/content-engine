@@ -4,10 +4,10 @@ Env:
   THREADS_USER_ID        the Threads user ID
   THREADS_ACCESS_TOKEN   a token with threads_basic and threads_content_publish
 
-Like Instagram, Threads fetches the video from `[publish] video_base_url` + "<session>-<card>.mp4".
+Like Instagram, Threads fetches `[publish] video_base_url` + "/<session>-<card>-<sha256>.mp4"; never overwrite it.
 
 Calls:
-  HEAD video_url
+  GET video_url                                          verify bytes against the approved digest before creation
   POST /{user}/threads media_type=VIDEO video_url text   -> container id
   GET  /{container}?fields=status,error_message          until FINISHED
   POST /{user}/threads_publish creation_id               the commit: the post goes live
@@ -33,7 +33,7 @@ class Threads:
 
     def publish(self, post: Post, commit: Commit) -> Result:
         need(post.video_url, "set [publish] video_base_url: Threads fetches the video from a public URL")
-        self.http.request("HEAD", post.video_url)
+        post.verify_hosted(self.http)
         c = self.http.json("POST", "%s/%s/threads" % (GRAPH, self.user), form={
             "media_type": "VIDEO", "video_url": post.video_url, "text": post.texts["short"],
             "access_token": self.token})

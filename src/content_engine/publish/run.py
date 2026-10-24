@@ -12,8 +12,10 @@ in state/dry-run/, so they never touch the live ledger or a real account.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import os
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,7 @@ from ..store import Lock, LockedError, now_utc, write_json
 from .ledger import Ledger, PlatformState
 from .plan import plan_today, repair_candidates
 from .platforms import ENV, ORDER, Post, build, missing_env
-from .platforms.base import Connector
+from .platforms.base import PLACEHOLDER, Connector
 from .simulate import Simulator
 
 Out = Callable[[str], None]
@@ -64,21 +66,27 @@ def attempt(ledger: Ledger, platform: str, connector: Connector, post: Post, day
     def commit(fn: Callable[[], Any]) -> Any:
         if flags["committed"]:
             raise RuntimeError("a connector may make only one publish call per attempt")
-        if post.verify:
-            post.verify()
-        ledger.append(post.item, platform, "commit", clock(), day)
-        flags["committed"] = True
-        try:
-            return fn()
-        except HttpError as e:
-            if 400 <= e.status < 500 and e.status not in (408, 409):
-                flags["refused"] = e  # a clear refusal: the platform did not take the post
-            raise
+        with post.guard() if post.guard else nullcontext():
+            if post.verify:
+                post.verify()
+            ledger.append(post.item, platform, "commit", clock(), day)
+            if post.check_pause:
+                post.check_pause()
+            flags["committed"] = True
+            try:
+                return fn()
+            except HttpError as e:
+                if 400 <= e.status < 500 and e.status not in (408, 409):
+                    flags["refused"] = e  # a clear refusal: the platform did not take the post
+                raise
 
     row: dict[str, Any] = {"item": post.item, "platform": platform}
     try:
         if post.verify:
             post.verify()
+        http = getattr(connector, "http", None)
+        if post.placeholder and isinstance(getattr(http, "transport", None), Simulator):
+            http.transport.media[post.video_url] = post.video_bytes()
         result = connector.publish(post, commit)
     except Exception as e:
         http = getattr(connector, "http", None)
@@ -102,20 +110,30 @@ def make_post(cfg: Any, session: Any, n: int, live: bool) -> Post:
     texts = dict(session.captions[str(n)])
     edit = session.edits[str(n)]
     video = session.dir / edit["artifacts"]["render"]
-    name = "%s-%d.mp4" % (session.id, n)
-    base = str(cfg["publish"]["video_base_url"]).strip()
-    url = base.rstrip("/") + "/" + name if base else ("" if live else "https://media.example.com/" + name)
     valid = session_mod.render_current(session, n)
+    digest = str((edit.get("render_proof") or {}).get("sha256")) if valid else hashlib.sha256(PLACEHOLDER).hexdigest()
+    url = (str(edit.get("video_url") or "") if live
+           else session_mod.hosted_url("https://media.example.com", session.id, n, digest))
     expected = session.review[str(n)].get("fingerprint")
 
+    def check_pause() -> None:
+        if paused(cfg):
+            raise RuntimeError("publishing is paused (state/PAUSED); no publish call was sent")
+
     def verify() -> None:
-        if (session_mod.review_status(session, n) != "approved"
-                or session_mod.fingerprint(session, n) != expected or not session_mod.render_current(session, n)):
-            raise RuntimeError("approved media changed; edit, render, review and approve again")
+        check_pause()
+        if not live:
+            return
+        saved = session_mod.Session.load(session.dir)
+        for candidate in (session, saved):
+            if (candidate.id != session.id or session_mod.review_status(candidate, n) != "approved"
+                    or session_mod.fingerprint(candidate, n) != expected
+                    or str(candidate.edits[str(n)].get("video_url") or "") != url
+                    or candidate.captions.get(str(n)) != texts or not session_mod.render_current(candidate, n)):
+                raise RuntimeError("approved media changed; edit, render, review and approve again")
 
     return Post(session.key(n), texts["title"], texts, video if valid else None, url, placeholder=not live,
-                video_sha256=str((edit.get("render_proof") or {}).get("sha256") or ""),
-                verify=verify if live else None)
+                video_sha256=digest, verify=verify, check_pause=check_pause, guard=session.lock if live else None)
 
 
 def _http(live: bool, transport: Transport | None, simulate: dict[str, str] | None) -> Http:
@@ -210,6 +228,9 @@ def _daily(cfg: Any, sessions: list[Any], now: dt.datetime, live: bool, transpor
         else:
             http = _http(live, transport, simulate)
             for p in today.platforms:
+                if paused(cfg):
+                    lines.append("Publishing is paused (state/PAUSED). No further platforms attempted.")
+                    break
                 rows.append(attempt(ledger, p, build(p, http, cfg, live, sleep), post, day, "daily", clock,
                                     _secrets(p, live)))
                 lines.append(_line(rows[-1]))
@@ -256,6 +277,9 @@ def repair(cfg: Any, sessions: list[Any], now: dt.datetime, live: bool, *, item:
             lines, code = [head], 0
             http = _http(live, transport, simulate) if cands["retry"] else None
             for it, p in cands["retry"]:
+                if paused(cfg):
+                    lines.append("Publishing is paused (state/PAUSED). No further platforms attempted.")
+                    break
                 if it not in approved:
                     lines.append("  %-10s skipped   %s is no longer approved as it was" % (p, it))
                     continue

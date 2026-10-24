@@ -33,7 +33,7 @@ from typing import Any
 
 from . import cards as cards_mod
 from . import ideas
-from .store import iso, read_json, write_json
+from .store import Lock, iso, read_json, write_json
 
 
 class SessionRuleError(RuntimeError):
@@ -62,6 +62,14 @@ class Session:
         return cls(**known, dir=folder)
 
     def save(self) -> None:
+        with self.lock():
+            self._save()
+
+    def lock(self) -> Lock:
+        return Lock(self.dir / "session.lock")
+
+    def _save(self) -> None:
+        """Write session state while the caller holds the session lock."""
         data = asdict(self)
         data.pop("dir")
         write_json(self.dir / "session.json", data)
@@ -197,6 +205,10 @@ def render_current(session: Session, n: int | str) -> bool:
     return file_hash(session.dir / edit["artifacts"]["render"]) == proof["sha256"]
 
 
+def hosted_url(base: str, sid: str, n: int | str, digest: str) -> str:
+    return "%s/%s-%s-%s.mp4" % (base.rstrip("/"), sid, n, digest) if base and digest else ""
+
+
 def fingerprint(session: Session, n: int | str) -> str | None:
     """What an approval covers: current presentation, source and rendered bytes, and post texts."""
     presentation = presentation_fingerprint(session, n)
@@ -205,6 +217,7 @@ def fingerprint(session: Session, n: int | str) -> str | None:
         return None
     edit = session.edits[str(n)]
     return _fingerprint({"presentation": presentation, "texts": texts,
+                         "video_url": edit.get("video_url", ""),
                          "render": file_hash(session.dir / edit["artifacts"]["render"])})
 
 

@@ -7,6 +7,7 @@ import pytest
 from content_engine import ideas, pipeline, review
 from content_engine import session as S
 from content_engine.demo_data import take_words
+from content_engine.publish import run as P
 
 from .conftest import ANSWER, NOW, approved_session, record, render_session
 
@@ -109,6 +110,20 @@ def test_unchanged_edit_keeps_verified_render_and_approval(cfg, monkeypatch):
     assert S.render_current(s, 1) and S.review_status(s, 1) == "approved"
 
 
+def test_hosted_url_is_bound_to_the_render_and_approval(cfg, monkeypatch):
+    s = approved_session(cfg)
+    cfg.data["publish"]["video_base_url"] = "https://media.example.com/reels"
+    render_session(cfg, s, monkeypatch)
+    digest = s.edits["1"]["render_proof"]["sha256"]
+    expected = "https://media.example.com/reels/%s-1-%s.mp4" % (s.id, digest)
+    assert s.edits["1"]["video_url"] == expected
+    assert P.make_post(cfg, s, 1, True).video_url == expected
+    cfg.data["publish"]["video_base_url"] = "https://media.example.org/reels"
+    pipeline.edit(cfg, s)
+    assert S.render_current(s, 1) and S.review_status(s, 1) == "changed"
+    assert s.edits["1"]["video_url"] != expected
+
+
 def test_missing_retake_transcript_never_resurrects_an_older_take(cfg):
     s = approved_session(cfg)
     record(s, [1], name_prefix="take-03")
@@ -123,6 +138,46 @@ def test_missing_retake_transcript_never_resurrects_an_older_take(cfg):
     record(s, [1], name_prefix="take-04")
     pipeline.edit(cfg, s)
     assert s.edits["1"]["take"] == "take-04-01"
+
+
+def test_restored_superseded_transcript_keeps_its_history(cfg):
+    s = approved_session(cfg)
+    record(s, [1], name_prefix="take-03")
+    pipeline.edit(cfg, s)
+    assert review.approve(s, [1], NOW) == []
+    s.save()
+    older = s.takes_dir / "take-01.json"
+    contents = older.read_bytes()
+    older.unlink()
+    pipeline.edit(cfg, s)
+    s = S.Session.load(s.dir)
+    assert s.takes["take-01"]["status"] == "superseded"
+    assert s.takes["take-01"]["missing"]
+    (s.takes_dir / "take-03-01.json").unlink()
+    older.write_bytes(contents)
+    pipeline.edit(cfg, s)
+    assert s.edits["1"]["take"] == "take-03-01"
+    assert S.review_status(s, 1) == "approved"
+    record(s, [1], name_prefix="take-04")
+    pipeline.edit(cfg, s)
+    assert s.edits["1"]["take"] == "take-04-01"
+
+
+def test_a_new_take_preserves_the_missing_takes_superseded_identity(cfg):
+    s = approved_session(cfg)
+    older = s.takes_dir / "take-01.json"
+    contents = older.read_bytes()
+    older.unlink()
+    record(s, [1], name_prefix="retake")
+    pipeline.edit(cfg, s)
+    assert s.edits["1"]["take"] == "retake-01"
+    assert s.takes["take-01"]["status"] == "superseded"
+    assert review.approve(s, [1], NOW) == []
+    (s.takes_dir / "retake-01.json").unlink()
+    older.write_bytes(contents)
+    pipeline.edit(cfg, s)
+    assert s.edits["1"]["take"] == "retake-01"
+    assert S.review_status(s, 1) == "approved"
 
 
 @pytest.mark.parametrize("artifact", ["subtitles", "source", "render"])
@@ -181,7 +236,7 @@ def test_deleting_old_takes_never_unrecords_a_session_or_drops_approvals(cfg):
         S.plan(cfg, [s], NOW, replace=True)
     record(s, [1], name_prefix="retake")  # a new take for card 1 replaces the missing one
     pipeline.match(cfg, s)
-    assert "take-01" not in s.takes and s.takes["retake-01"]["card"] == 1
+    assert s.takes["take-01"]["status"] == "superseded" and s.takes["retake-01"]["card"] == 1
 
 
 def test_stage_follows_the_session_from_plan_to_done(cfg):

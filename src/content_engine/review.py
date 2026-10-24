@@ -76,6 +76,9 @@ def _item(session: Session, n: int, page_dir: Path, render_dir: Path) -> str:
     problems = "".join("<li>%s</li>" % e(p) for p in edit.get("problems", []))
     posts = "".join('<span class="lab">%s · %d characters</span><pre>%s</pre>' % (k, len(v), e(v))
                     for k, v in texts.items())
+    if edit.get("video_url"):
+        posts += '<span class="lab">Hosted video: upload this render at this immutable URL</span><pre>%s</pre>' \
+                 % e(edit["video_url"])
     note = (session.review.get(str(n)) or {}).get("note")
     return ('<section class="card" id="i%d"><div class="top"><span class="num">%d</span><span class="hook">%s</span>'
             '<span class="chip %s">%s</span></div><p>%s</p><p class="why">%s · %.1f s raw, %.1f s cut · %s · '

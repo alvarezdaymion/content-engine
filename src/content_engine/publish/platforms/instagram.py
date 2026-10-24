@@ -5,10 +5,10 @@ Env:
   INSTAGRAM_ACCESS_TOKEN   a token with instagram_business_basic and instagram_business_content_publish
 
 Instagram fetches the video from a public URL, so the rendered file must be reachable at
-`[publish] video_base_url` + "<session>-<card>.mp4" (any static host or bucket works).
+`[publish] video_base_url` + "/<session>-<card>-<sha256>.mp4" on a host that forbids overwrites.
 
 Calls:
-  HEAD video_url                                          the file is reachable (checked before anything is created)
+  GET video_url                                          verify bytes against the approved digest before creation
   POST /{user}/media media_type=REELS video_url caption   -> container id
   GET  /{container}?fields=status_code                    until FINISHED
   POST /{user}/media_publish creation_id                  the commit: the reel goes live
@@ -34,7 +34,7 @@ class Instagram:
 
     def publish(self, post: Post, commit: Commit) -> Result:
         need(post.video_url, "set [publish] video_base_url: Instagram fetches the video from a public URL")
-        self.http.request("HEAD", post.video_url)
+        post.verify_hosted(self.http)
         c = self.http.json("POST", "%s/%s/media" % (GRAPH, self.user), form={
             "media_type": "REELS", "video_url": post.video_url, "caption": post.texts["full"],
             "share_to_feed": "true", "access_token": self.token})

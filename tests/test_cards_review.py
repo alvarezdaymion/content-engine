@@ -78,6 +78,14 @@ def test_review_page_links_the_raw_take_and_render_relatively(cfg, monkeypatch):
     assert 'src="../../../sessions/%s/takes/take-02.mp4"' % s.id in html and 'src="../renders/2.mp4"' in html
 
 
+def test_review_page_shows_the_immutable_upload_url(cfg, monkeypatch):
+    s = approved_session(cfg)
+    cfg.data["publish"]["video_base_url"] = "https://media.example.com/reels"
+    render_session(cfg, s, monkeypatch)
+    document = review.write_page(cfg, s).read_text()
+    assert s.edits["1"]["video_url"] in document
+
+
 CFG = {"max_words": 12, "max_slides": 6, "closing": "Save this for later."}
 TEXTS = {"full": "How do I get paid on time?\n\nSend the invoice the same day. Put the due date in writing. "
                  "Follow up on day 1, 7 and 14 with the same friendly script.\n\nSend me your question.\n\n"
