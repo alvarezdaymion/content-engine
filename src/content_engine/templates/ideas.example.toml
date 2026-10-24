@@ -1,0 +1,27 @@
+# Ideas you could answer on camera. Evidence from your sources is filed under the idea whose keywords match it
+# best, and the ranking decides which ideas the next recording session takes as cards.
+#
+# id        stable name (letters, numbers, dashes)
+# title     the on-screen hook
+# question  what the AI voice reads (a fresh `content-engine note` on the same topic replaces it)
+# context   optional situation read right after the question
+# keywords  phrases that file evidence here; plurals match singulars
+# points    talking points shown on the card
+# fit       how well it fits your audience, 0-3 (scales the score: 0.3, 0.6, 0.85, 1.0)
+
+[[idea]]
+id = "first-question"
+title = "The question everyone asks first"
+question = "What is the first thing a beginner should know about this?"
+context = "Hypothetical: someone is just starting and feels overwhelmed."
+keywords = ["beginner", "getting started", "first step"]
+points = ["The one thing that matters most", "The common mistake", "What to do this week"]
+fit = 3
+
+[[idea]]
+id = "common-mistake"
+title = "The mistake I see every week"
+question = "What is the most common mistake people make with this?"
+keywords = ["mistake", "wrong", "avoid"]
+points = ["Name the mistake", "Why it happens", "The fix"]
+fit = 2

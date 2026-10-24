@@ -2,6 +2,7 @@
 sessions/
 state/
 out/
+/data/
 content-engine-demo/
 content-engine.toml
 ideas.toml
