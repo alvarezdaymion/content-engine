@@ -1,0 +1,4 @@
+# crontab -e, then add (edit the paths). Runs one tick at the top of every hour:
+# idea sources run when they are due (every 6 hours by default) and the day's reel posts on the first tick
+# after [publish] post_after. cron has a minimal PATH and no shell profile: give uv's full path and load .env.
+0 * * * * cd /path/to/content-engine && /path/to/uv run --env-file .env content-engine run >> state/cron.log 2>&1

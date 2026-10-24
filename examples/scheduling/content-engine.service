@@ -1,0 +1,10 @@
+# Linux systemd (user unit). Copy content-engine.service and content-engine.timer to ~/.config/systemd/user/,
+# edit the paths, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now content-engine.timer
+[Unit]
+Description=Content engine tick
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/content-engine
+ExecStart=/path/to/uv run --env-file .env content-engine run

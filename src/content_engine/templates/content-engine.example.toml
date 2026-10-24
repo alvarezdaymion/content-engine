@@ -1,0 +1,96 @@
+# Content engine configuration. `content-engine init` copies this to content-engine.toml.
+# Every value has a default in src/content_engine/config.py; delete anything you don't need to change.
+# Credentials never go in this file. They come from environment variables (see .env.example).
+
+[creator]
+name = "Your name"
+timezone = "America/New_York"   # "today" for one-post-a-day and post_after use this zone
+
+[paths]
+sessions = "sessions"           # one folder per recording session: session.json, takes/, audio/
+state = "state"                 # evidence, source status, the publish ledger
+out = "out"                     # ideas.json, recording sheets, review pages, captions, renders, carousel text
+ideas = "ideas.toml"            # your ideas and their keywords
+
+[ideas]
+cooldown_days = 21              # an idea a session took leaves the ranking this long
+trending_hours = 72
+keep_days = 90                  # evidence older than this is dropped
+
+[sessions]
+cards = 8                       # question cards per recording session
+
+[cards]
+max_hook_chars = 60
+max_question_words = 35
+banned_words = []               # words that must never appear on a card or in a post
+
+[tts]
+enabled = false                 # true: `content-engine audio` has an AI voice read each question (billed)
+voice_id = ""                   # or set ELEVENLABS_VOICE_ID
+model = "eleven_multilingual_v2"
+
+[transcribe]
+model = "small"                 # local Whisper model for `content-engine transcribe` (uv sync --extra whisper)
+
+[matching]
+threshold = 0.6                 # share of a card's question that must be heard at the start of a take
+margin = 0.15                   # how far the best card must beat the next one
+
+[edit]
+max_gap = 0.5                   # pauses longer than this (seconds) become jump cuts
+pad = 0.12                      # air kept around each spoken span
+cut_fillers = false             # true: cut "um" and "uh" from the audio too (they are never captioned)
+caption_words = 3               # words per caption cue
+caption_chars = 16
+disclosure = "Question read by an AI voice"   # on screen while the AI voice reads; "" to hide
+
+[captions]
+cta = "Send me your question and I may answer it next."
+footer = "The question in this video is read by an AI voice."
+hashtags = []
+
+[carousel]
+max_words = 30                  # words per slide
+max_slides = 6
+closing = "Save this for later."
+
+[publish]
+mode = "dry-run"                # off | dry-run (simulated platforms, separate ledger) | live
+platforms = ["facebook", "instagram", "threads", "x", "youtube", "tiktok"]
+post_after = "11:30"            # `content-engine run` posts today's reel on its first tick after this time
+video_base_url = ""             # immutable uploads: <base>/<session>-<card>-<sha256>.mp4; set before edit/approval
+max_attempts = 3                # per item and platform, first try included (repair only retries definite failures)
+low_queue = 3                   # "record the next session" when this few approved reels are left
+
+[publish.youtube]
+privacy = "private"             # API uploads from unaudited projects stay private anyway
+category_id = "22"
+synthetic_media = true          # the question is read by an AI voice
+
+# Idea sources. Each runs when `every_hours` have passed since its last success.
+[[sources]]
+name = "youtube"
+type = "youtube"                # needs YOUTUBE_API_KEY
+queries = ["your topic", "a question your audience asks"]
+days = 7
+duration = "short"
+every_hours = 6
+
+[[sources]]
+name = "news"
+type = "news"                   # Google News RSS, no key
+queries = ["your industry"]
+every_hours = 6
+
+# [[sources]]
+# name = "my-posts"
+# type = "csv"                  # an export of your own posts: date,text,url,views
+# path = "data/my-posts.csv"
+# kind = "own_post"
+
+# [[sources]]
+# name = "competitor-ads"
+# type = "csv"                  # date,text,author,days_live,versions
+# path = "data/competitor-ads.csv"
+# kind = "ad"
